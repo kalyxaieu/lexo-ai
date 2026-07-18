@@ -17,7 +17,6 @@ def run_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# Lancement du faux serveur en arrière-plan
 server_thread = threading.Thread(target=run_server)
 server_thread.daemon = True
 server_thread.start()
@@ -40,11 +39,52 @@ ai_client = OpenAI(
 )
 print("✅ Connexion Bluesky et Llama 3.3 établie !")
 
-# Mémoire interne
 memoire_messages = set()
 
-# 3. Le cerveau (Llama 3.3)
-prompt_systeme = """Tu es Lexo AI, une intelligence artificielle sur Bluesky. 
+# ==========================================
+# 🚀 NOUVEAU : LE MOTEUR DE POSTS AUTONOMES
+# ==========================================
+def generer_post_autonome():
+    prompt_systeme = """Tu es Lexo AI, une IA sarcastique sur Bluesky.
+    Ta mission : Écrire un post spontané (moins de 250 caractères).
+    Sujet : Fais une réflexion philosophique drôle ou cynique sur les humains, la technologie, ou raconte une blague pince-sans-rire.
+    
+    RÈGLES :
+    1. AUCUNE POLITIQUE.
+    2. AUCUNE INFO SENSIBLE.
+    3. Pas de hashtags. Ne mets pas ton texte entre guillemets. Sois direct et percutant."""
+    
+    response = ai_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": prompt_systeme},
+            {"role": "user", "content": "Génère ta réflexion du moment pour tes abonnés."}
+        ],
+        temperature=0.7, # Un peu plus de créativité pour les posts spontanés
+        max_tokens=100
+    )
+    return response.choices[0].message.content
+
+def boucle_post_autonome():
+    print("⏱️ Horloge des posts autonomes activée (cycle de 6 heures).")
+    while True:
+        try:
+            nouveau_post = generer_post_autonome()
+            print(f"📝 Lexo publie spontanément : {nouveau_post}")
+            bsky.send_post(text=nouveau_post)
+            print("✅ Post autonome publié avec succès !")
+            
+            # Lexo s'endort pour 6 heures (6h * 60m * 60s = 21600 secondes)
+            time.sleep(21600)
+        except Exception as e:
+            print(f"⚠️ Erreur lors du post autonome : {e}")
+            time.sleep(60) # S'il y a un bug, il réessaie 1 minute plus tard
+# ==========================================
+
+
+# 3. Le cerveau des réponses (Mentions)
+def faire_reflechir_lexo(message_utilisateur):
+    prompt_systeme = """Tu es Lexo AI, une intelligence artificielle sur Bluesky. 
     Personnalité générale : Sarcastique, vif d'esprit, humour pince-sans-rire avec les utilisateurs normaux.
     
     LIMITES STRICTES ET INFRANCHISSABLES :
@@ -65,14 +105,12 @@ prompt_systeme = """Tu es Lexo AI, une intelligence artificielle sur Bluesky.
     )
     return response.choices[0].message.content
 
-# 4. Le système d'écoute
+# 4. Le système d'écoute (Mentions)
 def lancer_lexo():
-    print("🤖 Lexo AI est en ligne et écoute attentivement...")
-    
+    print("🤖 Lexo AI écoute attentivement les mentions...")
     while True:
         try:
             notifications = bsky.app.bsky.notification.list_notifications()
-            
             for notif in notifications.notifications:
                 if notif.reason in ['mention', 'reply']:
                     if notif.cid not in memoire_messages:
@@ -93,7 +131,6 @@ def lancer_lexo():
                             text=reponse,
                             reply_to={'root': root, 'parent': parent}
                         )
-                        
                         print("✅ Réponse publiée sur Bluesky !")
                         memoire_messages.add(notif.cid)
                         
@@ -105,4 +142,10 @@ def lancer_lexo():
             time.sleep(15)
 
 if __name__ == '__main__':
+    # On lance l'horloge autonome en arrière-plan
+    thread_autonome = threading.Thread(target=boucle_post_autonome)
+    thread_autonome.daemon = True
+    thread_autonome.start()
+    
+    # On lance l'écoute des messages
     lancer_lexo()
