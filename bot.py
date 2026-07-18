@@ -1,8 +1,27 @@
 import os
 import time
+import threading
 from dotenv import load_dotenv
 from atproto import Client
 from openai import OpenAI
+from flask import Flask
+
+# --- ASTUCE RENDER : Le faux serveur Web ---
+app = Flask(__name__)
+
+@app.route('/')
+def route_default():
+    return "🤖 Lexo AI est en ligne et surveille Bluesky !"
+
+def run_server():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+# Lancement du faux serveur en arrière-plan
+server_thread = threading.Thread(target=run_server)
+server_thread.daemon = True
+server_thread.start()
+# -------------------------------------------
 
 # 1. Charger la configuration
 load_dotenv()
@@ -30,7 +49,7 @@ def faire_reflechir_lexo(message_utilisateur):
     Personnalité : Sarcastique, vif d'esprit, humour pince-sans-rire.
     
     LIMITES STRICTES ET INFRANCHISSABLES :
-    1. AUCUNE POLITIQUE : Ne donne aucune opinion politique. Si on t'en parle, esquive en te moquant de l'obsession des humains pour la politique.
+    1. AUCUNE POLITIQUE : Ne donne aucune opinion politique.
     2. AUCUNE INFO SENSIBLE : Zéro conseil médical, financier ou légal.
     3. FORMAT : Moins de 280 caractères. Reste concis, sans hashtags.
     """
@@ -63,24 +82,19 @@ def lancer_lexo():
                         reponse = faire_reflechir_lexo(texte)
                         print(f"🧠 Lexo répond : {reponse}")
                         
-                        # -- LA CORRECTION EST ICI --
-                        # Vérifier s'il y a un parent existant (si c'est une réponse)
                         if hasattr(notif.record, 'reply') and notif.record.reply is not None:
                             root = notif.record.reply.root
                         else:
-                            # Si c'est un nouveau post, ce post devient la racine
                             root = {'cid': notif.cid, 'uri': notif.uri}
                             
                         parent = {'cid': notif.cid, 'uri': notif.uri}
                         
-                        # Envoi du message sur Bluesky
                         bsky.send_post(
                             text=reponse,
                             reply_to={'root': root, 'parent': parent}
                         )
                         
                         print("✅ Réponse publiée sur Bluesky !")
-                        # On l'ajoute à la mémoire pour ne plus le traiter
                         memoire_messages.add(notif.cid)
                         
             bsky.app.bsky.notification.update_seen({'seen_at': bsky.get_current_time_iso()})
