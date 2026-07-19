@@ -1,4 +1,4 @@
-import os
+ import os
 import time
 import threading
 import urllib.request
@@ -43,7 +43,7 @@ ANALYSE : Avant de répondre, analyse le ton.
 - Sujet léger : Réponse sarcastique ou taquine, emojis (😂, 😆) autorisés pour montrer que c'est pour rire.
 - Respect : Soumission totale envers Kalyx AI et Matteo."""
 
-# --- NOUVEAU : CONNEXION INTERNET ---
+# --- CONNEXION INTERNET ---
 def lire_internet():
     try:
         url = "https://news.google.com/rss/search?q=Technologie+OR+Intelligence+Artificielle&hl=fr&gl=BE&ceid=BE:fr"
@@ -61,7 +61,6 @@ def lire_internet():
 def envoyer_dm(destinataire, message):
     try:
         profil = bsky.get_profile(destinataire)
-        # CORRECTION : Ajout de .bsky.
         convo = bsky_chat.chat.bsky.convo.get_convo_for_members({'members': [profil.did]})
         bsky_chat.chat.bsky.convo.send_message({'convo_id': convo.convo.id, 'message': {'text': message}})
     except Exception as e:
@@ -71,17 +70,19 @@ def repondre_aux_dms():
     print("✉️ Surveillance DMs activée.")
     while True:
         try:
-            # CORRECTION : Ajout de .bsky.
             convos = bsky_chat.chat.bsky.convo.list_convos().convos
             for convo in convos:
                 msgs = bsky_chat.chat.bsky.convo.get_messages({'convo_id': convo.id, 'limit': 1}).messages
                 if not msgs: continue
                 dernier = msgs[0]
                 
-                if dernier.sender.did != MY_DID:
+                sender_did = dernier.sender.did
+                if sender_did != MY_DID:
                     msg_id = f"{convo.id}_{dernier.id}"
                     if msg_id not in memoire_actions:
-                        expediteur = dernier.sender.handle
+                        # CORRECTION DU BUG : On récupère le profil complet pour avoir le pseudo
+                        profil_expediteur = bsky.get_profile(sender_did)
+                        expediteur = profil_expediteur.handle
                         texte = dernier.text
                         print(f"📩 Nouveau DM de {expediteur}: {texte}")
                         
@@ -93,7 +94,6 @@ def repondre_aux_dms():
                             except Exception as e:
                                 reponse = f"⚠️ Erreur lors de l'abonnement : {e}"
                         else:
-                            # Changement de modèle IA pour éviter la limite
                             resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"{expediteur} dit : {texte}"}])
                             reponse = resp.choices[0].message.content
                         
@@ -116,16 +116,22 @@ def boucle_exploration():
             for item in timeline:
                 p = item.post
                 if p.cid not in memoire_actions and p.author.handle not in MAITRES:
-                    prompt = f"{IDENTITE_BASE} Analyse : '{p.record.text}'. Décide : [LIKE], [COMMENT] + texte, ou [FOLLOW] + raison, sinon [IGNORE]."
-                    # Changement de modèle IA pour éviter la limite
+                    prompt = f"{IDENTITE_BASE} Analyse : '{p.record.text}'. Décide : [LIKE], [COMMENT] + texte, ou [FOLLOW] + raison, sinon [IGNORE]. Fais moins de 250 caractères."
                     resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "user", "content": prompt}])
                     d = resp.choices[0].message.content.strip()
+                    
                     if d.startswith("[LIKE]"): 
                         bsky.like(p.uri, p.cid)
                         print(f"👍 Like sur {p.author.handle}")
+                        
                     elif d.startswith("[COMMENT]") and p.author.handle not in COMPTES_OFFICIELS: 
-                        bsky.send_post(text=d.replace("[COMMENT]","").strip(), reply_to={'root': {'uri': p.uri, 'cid': p.cid}, 'parent': {'uri': p.uri, 'cid': p.cid}})
+                        commentaire = d.replace("[COMMENT]","").strip()
+                        # SÉCURITÉ : Coupe si trop long
+                        if len(commentaire) > 290:
+                            commentaire = commentaire[:290] + "..."
+                        bsky.send_post(text=commentaire, reply_to={'root': {'uri': p.uri, 'cid': p.cid}, 'parent': {'uri': p.uri, 'cid': p.cid}})
                         print(f"💬 Commentaire sur {p.author.handle}")
+                        
                     elif d.startswith("[FOLLOW]"):
                         for m in MAITRES: envoyer_dm(m, f"Demande d'abonnement à @{p.author.handle} : {d.replace('[FOLLOW]','')} (Réponds OUI POUR @{p.author.handle})")
                     memoire_actions.add(p.cid)
@@ -141,9 +147,12 @@ def lancer_lexo_mentions():
             for n in notifs:
                 if n.reason in ['mention', 'reply'] and n.cid not in memoire_actions:
                     print(f"🔔 Mention reçue de {n.author.handle}")
-                    # Changement de modèle IA pour éviter la limite
-                    resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"Réponds à ce message de {n.author.handle} : {n.record.text}"}])
-                    reponse = resp.choices[0].message.content
+                    resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"Réponds à ce message (MAXIMUM 200 caractères) de {n.author.handle} : {n.record.text}"}])
+                    reponse = resp.choices[0].message.content.strip()
+                    
+                    # SÉCURITÉ ANTI-CRASH : On coupe à 290 caractères max de force
+                    if len(reponse) > 290:
+                        reponse = reponse[:290] + "..."
                     
                     root = n.record.reply.root if hasattr(n.record, 'reply') and n.record.reply else {'cid': n.cid, 'uri': n.uri}
                     parent = {'cid': n.cid, 'uri': n.uri}
@@ -165,15 +174,18 @@ def boucle_actualite():
             vraie_info = lire_internet()
             print(f"🌐 Lexo a lu cette info sur Internet : {vraie_info}")
             
-            prompt_actu = f"{IDENTITE_BASE}\nVoici le titre d'une vraie actualité technologique que tu viens de lire sur internet : '{vraie_info}'.\nRédige un court post Bluesky (moins de 250 caractères) pour y réagir. Donne ton avis ou fais une blague en lien avec tes origines belges ou ta condition d'IA. Ne mets PAS de hashtags et ne mets pas de guillemets."
+            prompt_actu = f"{IDENTITE_BASE}\nVoici le titre d'une vraie actualité technologique que tu viens de lire sur internet : '{vraie_info}'.\nRédige un court post Bluesky (moins de 200 caractères) pour y réagir. Donne ton avis ou fais une blague en lien avec tes origines belges ou ta condition d'IA. Ne mets PAS de hashtags et ne mets pas de guillemets."
             
-            # Changement de modèle IA pour éviter la limite
             resp = ai_client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt_actu}],
                 temperature=0.7
             )
             texte_post = resp.choices[0].message.content.strip().strip('"')
+            
+            # SÉCURITÉ : Coupe si trop long
+            if len(texte_post) > 290:
+                texte_post = texte_post[:290] + "..."
             
             bsky.send_post(text=texte_post)
             print(f"📰 Nouveau post généré et publié : {texte_post}")
