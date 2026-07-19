@@ -26,7 +26,7 @@ COMPTES_OFFICIELS = ['bsky.app', 'mu.social', 'eurosky.social']
 
 bsky = Client()
 bsky.login(BSKY_HANDLE, BSKY_PASSWORD)
-MY_DID = bsky.me.did # Correction de l'identifiant
+MY_DID = bsky.me.did
 
 ai_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 memoire_actions = set()
@@ -58,27 +58,18 @@ def repondre_aux_dms():
                     if dernier.sender.did != MY_DID:
                         expediteur = dernier.sender.handle
                         texte = dernier.text
-                        
-                        # Autorisation abonnement
                         if expediteur in MAITRES and "OUI POUR @" in texte.upper():
                             cible = texte.upper().split("OUI POUR @")[1].split()[0].strip('.,!?;:')
                             bsky.follow(bsky.get_profile(cible).did)
                             reponse = f"✅ Abonnement à @{cible} effectué, Maître."
                         else:
-                            # Analyse IA
-                            resp = ai_client.chat.completions.create(
-                                model="llama-3.3-70b-versatile",
-                                messages=[{"role": "system", "content": IDENTITE_BASE}, 
-                                          {"role": "user", "content": f"{expediteur} dit : {texte}"}]
-                            )
+                            resp = ai_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"{expediteur} dit : {texte}"}])
                             reponse = resp.choices[0].message.content
-                        
                         bsky.chat.convo.send_message({'convo_id': convo.id, 'message': {'text': reponse}})
                         bsky.chat.convo.update_read({'convo_id': convo.id, 'message_id': dernier.id})
         except: pass
         time.sleep(30)
 
-# --- BOUCLE EXPLORATION (5 posts / 30 min) ---
 def boucle_exploration():
     while True:
         try:
@@ -97,7 +88,22 @@ def boucle_exploration():
         except: pass
         time.sleep(1800)
 
+# --- FONCTION MANQUANTE : SURVEILLANCE DES MENTIONS ---
+def lancer_lexo_mentions():
+    while True:
+        try:
+            notifs = bsky.app.bsky.notification.list_notifications().notifications
+            for n in notifs:
+                if n.reason in ['mention', 'reply'] and n.cid not in memoire_actions:
+                    prompt = f"{IDENTITE_BASE} Réponds à : '{n.record.text}'. (Max 280 chars, pas de hashtags)"
+                    resp = ai_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}])
+                    reponse = resp.choices[0].message.content
+                    bsky.send_post(text=reponse, reply_to={'root': {'uri': n.uri, 'cid': n.cid}, 'parent': {'uri': n.uri, 'cid': n.cid}})
+                    memoire_actions.add(n.cid)
+        except: pass
+        time.sleep(15)
+
 if __name__ == '__main__':
     threading.Thread(target=boucle_exploration, daemon=True).start()
     threading.Thread(target=repondre_aux_dms, daemon=True).start()
-    # Code de mention inchangé...
+    lancer_lexo_mentions()
