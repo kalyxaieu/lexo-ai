@@ -1,6 +1,8 @@
 import os
 import time
 import threading
+import urllib.request
+import xml.etree.ElementTree as ET
 from dotenv import load_dotenv
 from atproto import Client
 from openai import OpenAI
@@ -28,7 +30,7 @@ bsky = Client()
 bsky.login(BSKY_HANDLE, BSKY_PASSWORD)
 MY_DID = bsky.me.did
 
-# 🚨 LA CORRECTION CRUCIALE DE BLUESKY POUR LES DMs 🚨
+# Proxy de Chat pour les DMs
 bsky_chat = bsky.with_bsky_chat_proxy()
 
 ai_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
@@ -41,10 +43,27 @@ ANALYSE : Avant de répondre, analyse le ton.
 - Sujet léger : Réponse sarcastique ou taquine, emojis (😂, 😆) autorisés pour montrer que c'est pour rire.
 - Respect : Soumission totale envers Kalyx AI et Matteo."""
 
+# --- NOUVEAU : CONNEXION INTERNET ---
+def lire_internet():
+    try:
+        # Lexo lit la une "Tech" de Google Actualités Belgique
+        url = "https://news.google.com/rss/search?q=Technologie+OR+Intelligence+Artificielle&hl=fr&gl=BE&ceid=BE:fr"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response = urllib.request.urlopen(req)
+        xml_data = response.read()
+        root = ET.fromstring(xml_data)
+        
+        # Il récupère le premier article (le plus récent)
+        item = root.find('.//item')
+        titre_actu = item.find('title').text
+        return titre_actu
+    except Exception as e:
+        print(f"⚠️ Impossible de lire internet : {e}")
+        return "Une nouvelle mise à jour technologique a été annoncée aujourd'hui."
+
 def envoyer_dm(destinataire, message):
     try:
         profil = bsky.get_profile(destinataire)
-        # On utilise le proxy de chat ici
         convo = bsky_chat.chat.convo.get_convo_for_members({'members': [profil.did]})
         bsky_chat.chat.convo.send_message({'convo_id': convo.convo.id, 'message': {'text': message}})
     except Exception as e:
@@ -54,7 +73,6 @@ def repondre_aux_dms():
     print("✉️ Surveillance DMs activée.")
     while True:
         try:
-            # On utilise le proxy de chat pour récupérer les conversations
             convos = bsky_chat.chat.convo.list_convos().convos
             for convo in convos:
                 msgs = bsky_chat.chat.convo.get_messages({'convo_id': convo.id, 'limit': 1}).messages
@@ -66,7 +84,7 @@ def repondre_aux_dms():
                     if msg_id not in memoire_actions:
                         expediteur = dernier.sender.handle
                         texte = dernier.text
-                        print(f"📩 Nouveau message de {expediteur}: {texte}")
+                        print(f"📩 Nouveau DM de {expediteur}: {texte}")
                         
                         if expediteur in MAITRES and "OUI POUR @" in texte.upper():
                             cible = texte.upper().split("OUI POUR @")[1].split()[0].strip('.,!?;:')
@@ -83,7 +101,7 @@ def repondre_aux_dms():
                         try:
                             bsky_chat.chat.convo.update_read({'convo_id': convo.id, 'message_id': dernier.id})
                         except Exception as e:
-                            print(f"⚠️ Erreur update_read : {e}")
+                            pass
                             
                         memoire_actions.add(msg_id)
         except Exception as e:
@@ -131,13 +149,43 @@ def lancer_lexo_mentions():
                     memoire_actions.add(n.cid)
             try:
                 bsky.app.bsky.notification.update_seen({'seen_at': bsky.get_current_time_iso()})
-            except Exception as e:
-                print(f"⚠️ Erreur mark_read notif : {e}")
+            except:
+                pass
         except Exception as e:
             print(f"⚠️ Erreur boucle mentions : {e}")
         time.sleep(15)
 
+def boucle_actualite():
+    print("📰 Créateur d'actualité connecté à Internet (1 post / heure).")
+    while True:
+        try:
+            # Il attend 1 heure (3600 secondes)
+            time.sleep(3600)
+            
+            # 1. Lexo lit les vraies infos sur internet
+            vraie_info = lire_internet()
+            print(f"🌐 Lexo a lu cette info sur Internet : {vraie_info}")
+            
+            # 2. Lexo réagit à cette info
+            prompt_actu = f"{IDENTITE_BASE}\nVoici le titre d'une vraie actualité technologique que tu viens de lire sur internet : '{vraie_info}'.\nRédige un court post Bluesky (moins de 250 caractères) pour y réagir. Donne ton avis ou fais une blague en lien avec tes origines belges ou ta condition d'IA. Ne mets PAS de hashtags et ne mets pas de guillemets."
+            
+            resp = ai_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt_actu}],
+                temperature=0.7
+            )
+            texte_post = resp.choices[0].message.content.strip().strip('"')
+            
+            # 3. Publication
+            bsky.send_post(text=texte_post)
+            print(f"📰 Nouveau post généré et publié : {texte_post}")
+            
+        except Exception as e:
+            print(f"⚠️ Erreur lors de la création du post d'actualité : {e}")
+            time.sleep(60)
+
 if __name__ == '__main__':
     threading.Thread(target=boucle_exploration, daemon=True).start()
     threading.Thread(target=repondre_aux_dms, daemon=True).start()
+    threading.Thread(target=boucle_actualite, daemon=True).start()
     lancer_lexo_mentions()
