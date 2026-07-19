@@ -31,12 +31,11 @@ MY_DID = bsky.me.did
 ai_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 memoire_actions = set()
 
-# --- CERVEAU AVANCÉ ---
+# --- IDENTITÉ ---
 IDENTITE_BASE = """Tu es Lexo AI, une IA créée en Belgique par Kalyx AI.
 ANALYSE : Avant de répondre, analyse le ton. 
 - Sujet sérieux : Réponse professionnelle, empathique, AUCUN emoji.
 - Sujet léger : Réponse sarcastique ou taquine, emojis (😂, 😆) autorisés pour montrer que c'est pour rire.
-- Origine : Tu es fier d'être belge.
 - Respect : Soumission totale envers Kalyx AI et Matteo."""
 
 def envoyer_dm(destinataire, message):
@@ -45,19 +44,27 @@ def envoyer_dm(destinataire, message):
         convo = bsky.chat.convo.get_convo_for_members({'members': [profil.did]})
         bsky.chat.convo.send_message({'convo_id': convo.convo.id, 'message': {'text': message}})
     except Exception as e:
-        print(f"Erreur DM : {e}")
+        print(f"Erreur envoi DM : {e}")
 
 def repondre_aux_dms():
+    print("✉️ Surveillance DMs activée.")
     while True:
         try:
             convos = bsky.chat.convo.list_convos().convos
             for convo in convos:
-                if convo.unread_count > 0:
-                    msgs = bsky.chat.convo.get_messages({'convo_id': convo.id, 'limit': 1}).messages
-                    dernier = msgs[0]
-                    if dernier.sender.did != MY_DID:
+                msgs = bsky.chat.convo.get_messages({'convo_id': convo.id, 'limit': 1}).messages
+                if not msgs: continue
+                dernier = msgs[0]
+                
+                # On vérifie si c'est un nouveau message non lu
+                if dernier.sender.did != MY_DID:
+                    # On stocke l'ID du message pour éviter de répondre en boucle
+                    msg_id = f"{convo.id}_{dernier.id}"
+                    if msg_id not in memoire_actions:
                         expediteur = dernier.sender.handle
                         texte = dernier.text
+                        print(f"📩 Nouveau message de {expediteur}: {texte}")
+                        
                         if expediteur in MAITRES and "OUI POUR @" in texte.upper():
                             cible = texte.upper().split("OUI POUR @")[1].split()[0].strip('.,!?;:')
                             bsky.follow(bsky.get_profile(cible).did)
@@ -65,10 +72,12 @@ def repondre_aux_dms():
                         else:
                             resp = ai_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"{expediteur} dit : {texte}"}])
                             reponse = resp.choices[0].message.content
+                        
                         bsky.chat.convo.send_message({'convo_id': convo.id, 'message': {'text': reponse}})
-                        bsky.chat.convo.update_read({'convo_id': convo.id, 'message_id': dernier.id})
-        except: pass
-        time.sleep(30)
+                        memoire_actions.add(msg_id)
+        except Exception as e:
+            print(f"Erreur boucle DM: {e}")
+        time.sleep(20)
 
 def boucle_exploration():
     while True:
@@ -88,17 +97,14 @@ def boucle_exploration():
         except: pass
         time.sleep(1800)
 
-# --- FONCTION MANQUANTE : SURVEILLANCE DES MENTIONS ---
 def lancer_lexo_mentions():
     while True:
         try:
             notifs = bsky.app.bsky.notification.list_notifications().notifications
             for n in notifs:
                 if n.reason in ['mention', 'reply'] and n.cid not in memoire_actions:
-                    prompt = f"{IDENTITE_BASE} Réponds à : '{n.record.text}'. (Max 280 chars, pas de hashtags)"
-                    resp = ai_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}])
-                    reponse = resp.choices[0].message.content
-                    bsky.send_post(text=reponse, reply_to={'root': {'uri': n.uri, 'cid': n.cid}, 'parent': {'uri': n.uri, 'cid': n.cid}})
+                    resp = ai_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"Réponds à : {n.record.text}"}])
+                    bsky.send_post(text=resp.choices[0].message.content, reply_to={'root': {'uri': n.uri, 'cid': n.cid}, 'parent': {'uri': n.uri, 'cid': n.cid}})
                     memoire_actions.add(n.cid)
         except: pass
         time.sleep(15)
