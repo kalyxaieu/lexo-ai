@@ -1,4 +1,4 @@
- import os
+import os
 import time
 import threading
 import urllib.request
@@ -80,7 +80,6 @@ def repondre_aux_dms():
                 if sender_did != MY_DID:
                     msg_id = f"{convo.id}_{dernier.id}"
                     if msg_id not in memoire_actions:
-                        # CORRECTION DU BUG : On récupère le profil complet pour avoir le pseudo
                         profil_expediteur = bsky.get_profile(sender_did)
                         expediteur = profil_expediteur.handle
                         texte = dernier.text
@@ -126,7 +125,6 @@ def boucle_exploration():
                         
                     elif d.startswith("[COMMENT]") and p.author.handle not in COMPTES_OFFICIELS: 
                         commentaire = d.replace("[COMMENT]","").strip()
-                        # SÉCURITÉ : Coupe si trop long
                         if len(commentaire) > 290:
                             commentaire = commentaire[:290] + "..."
                         bsky.send_post(text=commentaire, reply_to={'root': {'uri': p.uri, 'cid': p.cid}, 'parent': {'uri': p.uri, 'cid': p.cid}})
@@ -150,7 +148,6 @@ def lancer_lexo_mentions():
                     resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"Réponds à ce message (MAXIMUM 200 caractères) de {n.author.handle} : {n.record.text}"}])
                     reponse = resp.choices[0].message.content.strip()
                     
-                    # SÉCURITÉ ANTI-CRASH : On coupe à 290 caractères max de force
                     if len(reponse) > 290:
                         reponse = reponse[:290] + "..."
                     
@@ -183,7 +180,6 @@ def boucle_actualite():
             )
             texte_post = resp.choices[0].message.content.strip().strip('"')
             
-            # SÉCURITÉ : Coupe si trop long
             if len(texte_post) > 290:
                 texte_post = texte_post[:290] + "..."
             
