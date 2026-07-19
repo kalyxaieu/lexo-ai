@@ -46,14 +46,11 @@ ANALYSE : Avant de répondre, analyse le ton.
 # --- NOUVEAU : CONNEXION INTERNET ---
 def lire_internet():
     try:
-        # Lexo lit la une "Tech" de Google Actualités Belgique
         url = "https://news.google.com/rss/search?q=Technologie+OR+Intelligence+Artificielle&hl=fr&gl=BE&ceid=BE:fr"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         response = urllib.request.urlopen(req)
         xml_data = response.read()
         root = ET.fromstring(xml_data)
-        
-        # Il récupère le premier article (le plus récent)
         item = root.find('.//item')
         titre_actu = item.find('title').text
         return titre_actu
@@ -64,8 +61,9 @@ def lire_internet():
 def envoyer_dm(destinataire, message):
     try:
         profil = bsky.get_profile(destinataire)
-        convo = bsky_chat.chat.convo.get_convo_for_members({'members': [profil.did]})
-        bsky_chat.chat.convo.send_message({'convo_id': convo.convo.id, 'message': {'text': message}})
+        # CORRECTION : Ajout de .bsky.
+        convo = bsky_chat.chat.bsky.convo.get_convo_for_members({'members': [profil.did]})
+        bsky_chat.chat.bsky.convo.send_message({'convo_id': convo.convo.id, 'message': {'text': message}})
     except Exception as e:
         print(f"⚠️ Erreur envoi DM à {destinataire}: {e}")
 
@@ -73,9 +71,10 @@ def repondre_aux_dms():
     print("✉️ Surveillance DMs activée.")
     while True:
         try:
-            convos = bsky_chat.chat.convo.list_convos().convos
+            # CORRECTION : Ajout de .bsky.
+            convos = bsky_chat.chat.bsky.convo.list_convos().convos
             for convo in convos:
-                msgs = bsky_chat.chat.convo.get_messages({'convo_id': convo.id, 'limit': 1}).messages
+                msgs = bsky_chat.chat.bsky.convo.get_messages({'convo_id': convo.id, 'limit': 1}).messages
                 if not msgs: continue
                 dernier = msgs[0]
                 
@@ -94,12 +93,13 @@ def repondre_aux_dms():
                             except Exception as e:
                                 reponse = f"⚠️ Erreur lors de l'abonnement : {e}"
                         else:
-                            resp = ai_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"{expediteur} dit : {texte}"}])
+                            # Changement de modèle IA pour éviter la limite
+                            resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"{expediteur} dit : {texte}"}])
                             reponse = resp.choices[0].message.content
                         
-                        bsky_chat.chat.convo.send_message({'convo_id': convo.id, 'message': {'text': reponse}})
+                        bsky_chat.chat.bsky.convo.send_message({'convo_id': convo.id, 'message': {'text': reponse}})
                         try:
-                            bsky_chat.chat.convo.update_read({'convo_id': convo.id, 'message_id': dernier.id})
+                            bsky_chat.chat.bsky.convo.update_read({'convo_id': convo.id, 'message_id': dernier.id})
                         except Exception as e:
                             pass
                             
@@ -117,7 +117,8 @@ def boucle_exploration():
                 p = item.post
                 if p.cid not in memoire_actions and p.author.handle not in MAITRES:
                     prompt = f"{IDENTITE_BASE} Analyse : '{p.record.text}'. Décide : [LIKE], [COMMENT] + texte, ou [FOLLOW] + raison, sinon [IGNORE]."
-                    resp = ai_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}])
+                    # Changement de modèle IA pour éviter la limite
+                    resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "user", "content": prompt}])
                     d = resp.choices[0].message.content.strip()
                     if d.startswith("[LIKE]"): 
                         bsky.like(p.uri, p.cid)
@@ -140,7 +141,8 @@ def lancer_lexo_mentions():
             for n in notifs:
                 if n.reason in ['mention', 'reply'] and n.cid not in memoire_actions:
                     print(f"🔔 Mention reçue de {n.author.handle}")
-                    resp = ai_client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"Réponds à ce message de {n.author.handle} : {n.record.text}"}])
+                    # Changement de modèle IA pour éviter la limite
+                    resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"Réponds à ce message de {n.author.handle} : {n.record.text}"}])
                     reponse = resp.choices[0].message.content
                     
                     root = n.record.reply.root if hasattr(n.record, 'reply') and n.record.reply else {'cid': n.cid, 'uri': n.uri}
@@ -159,24 +161,20 @@ def boucle_actualite():
     print("📰 Créateur d'actualité connecté à Internet (1 post / heure).")
     while True:
         try:
-            # Il attend 1 heure (3600 secondes)
             time.sleep(3600)
-            
-            # 1. Lexo lit les vraies infos sur internet
             vraie_info = lire_internet()
             print(f"🌐 Lexo a lu cette info sur Internet : {vraie_info}")
             
-            # 2. Lexo réagit à cette info
             prompt_actu = f"{IDENTITE_BASE}\nVoici le titre d'une vraie actualité technologique que tu viens de lire sur internet : '{vraie_info}'.\nRédige un court post Bluesky (moins de 250 caractères) pour y réagir. Donne ton avis ou fais une blague en lien avec tes origines belges ou ta condition d'IA. Ne mets PAS de hashtags et ne mets pas de guillemets."
             
+            # Changement de modèle IA pour éviter la limite
             resp = ai_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt_actu}],
                 temperature=0.7
             )
             texte_post = resp.choices[0].message.content.strip().strip('"')
             
-            # 3. Publication
             bsky.send_post(text=texte_post)
             print(f"📰 Nouveau post généré et publié : {texte_post}")
             
