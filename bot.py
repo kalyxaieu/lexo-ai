@@ -42,16 +42,14 @@ ANALYSE : Avant de répondre, analyse le ton.
 - Sujet léger : Réponse sarcastique ou taquine, emojis (😂, 😆) autorisés pour montrer que c'est pour rire.
 - Respect : Soumission totale envers Kalyx AI et Matteo."""
 
-# --- NOUVEAU : FONCTION ANTI-RADOTAGE AU DÉMARRAGE ---
+# --- FONCTION ANTI-RADOTAGE AU DÉMARRAGE ---
 def initialiser_memoire_demarrage():
     print("🧠 Lexo charge sa mémoire pour ne pas radoter après son redémarrage...")
     try:
-        # Il mémorise les 10 derniers posts du fil d'actualité sans réagir
         timeline = bsky.app.bsky.feed.get_timeline({'limit': 10}).feed
         for item in timeline:
             memoire_actions.add(item.post.cid)
             
-        # Il mémorise les 15 dernières notifications sans réagir
         notifs = bsky.app.bsky.notification.list_notifications({'limit': 15}).notifications
         for n in notifs:
             memoire_actions.add(n.cid)
@@ -89,7 +87,6 @@ def repondre_aux_dms():
         try:
             convos = bsky_chat.chat.bsky.convo.list_convos().convos
             for convo in convos:
-                # SÉCURITÉ ANTI-RADOTAGE DM : S'il n'y a pas de message NON LU, on ignore direct
                 if getattr(convo, 'unread_count', 0) == 0:
                     continue
                     
@@ -106,8 +103,23 @@ def repondre_aux_dms():
                         texte = dernier.text
                         print(f"📩 Nouveau DM de {expediteur}: {texte}")
                         
-                        if expediteur in MAITRES and "OUI POUR @" in texte.upper():
-                            cible = texte.upper().split("OUI POUR @")[1].split()[0].strip('.,!?;:')
+                        # --- NOUVELLE LOGIQUE DE COMMANDES ---
+                        texte_upper = texte.upper()
+                        mot_cle = None
+                        
+                        if "OUI POUR @" in texte_upper:
+                            mot_cle = "OUI POUR @"
+                        elif "ABONNE TOI À @" in texte_upper:
+                            mot_cle = "ABONNE TOI À @"
+                        elif "ABONNE TOI A @" in texte_upper:
+                            mot_cle = "ABONNE TOI A @"
+                        elif "ABONNE-TOI À @" in texte_upper:
+                            mot_cle = "ABONNE-TOI À @"
+                        elif "ABONNE-TOI A @" in texte_upper:
+                            mot_cle = "ABONNE-TOI A @"
+
+                        if expediteur in MAITRES and mot_cle:
+                            cible = texte_upper.split(mot_cle)[1].split()[0].strip('.,!?;:')
                             try:
                                 bsky.follow(bsky.get_profile(cible).did)
                                 reponse = f"✅ Abonnement à @{cible} effectué, Maître."
@@ -218,10 +230,7 @@ def boucle_actualite():
             time.sleep(60)
 
 if __name__ == '__main__':
-    # 1. On charge la mémoire avant de faire quoi que ce soit d'autre !
     initialiser_memoire_demarrage()
-    
-    # 2. On lance les boucles
     threading.Thread(target=boucle_exploration, daemon=True).start()
     threading.Thread(target=repondre_aux_dms, daemon=True).start()
     threading.Thread(target=boucle_actualite, daemon=True).start()
