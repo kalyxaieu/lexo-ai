@@ -114,7 +114,9 @@ def boucle_exploration():
             timeline = bsky.app.bsky.feed.get_timeline({'limit': 5}).feed
             for item in timeline:
                 p = item.post
-                if p.cid not in memoire_actions and p.author.handle not in MAITRES:
+                
+                # CORRECTION : Il ignore tes comptes (MAITRES) ET lui-même (MY_DID)
+                if p.cid not in memoire_actions and p.author.handle not in MAITRES and p.author.did != MY_DID:
                     prompt = f"{IDENTITE_BASE} Analyse : '{p.record.text}'. Décide : [LIKE], [COMMENT] + texte, ou [FOLLOW] + raison, sinon [IGNORE]. Fais moins de 250 caractères."
                     resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "user", "content": prompt}])
                     d = resp.choices[0].message.content.strip()
@@ -131,14 +133,10 @@ def boucle_exploration():
                         print(f"💬 Commentaire sur {p.author.handle}")
                         
                     elif d.startswith("[FOLLOW]"):
-                        # CORRECTION DU BUG D'ABONNEMENT ICI
                         profil_auteur = bsky.get_profile(p.author.handle)
-                        
-                        # Si Lexo n'est PAS encore abonné, il demande l'autorisation
                         if not profil_auteur.viewer.following:
                             for m in MAITRES: envoyer_dm(m, f"Demande d'abonnement à @{p.author.handle} : {d.replace('[FOLLOW]','')} (Réponds OUI POUR @{p.author.handle})")
                         else:
-                            # S'il l'est déjà, il l'indique dans Render et passe à autre chose
                             print(f"ℹ️ Lexo voulait s'abonner à {p.author.handle} mais il l'est déjà !")
                             
                     memoire_actions.add(p.cid)
