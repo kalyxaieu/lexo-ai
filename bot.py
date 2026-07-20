@@ -30,7 +30,6 @@ bsky = Client()
 bsky.login(BSKY_HANDLE, BSKY_PASSWORD)
 MY_DID = bsky.me.did
 
-# Proxy de Chat pour les DMs
 bsky_chat = bsky.with_bsky_chat_proxy()
 
 ai_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
@@ -42,6 +41,24 @@ ANALYSE : Avant de répondre, analyse le ton.
 - Sujet sérieux : Réponse professionnelle, empathique, AUCUN emoji.
 - Sujet léger : Réponse sarcastique ou taquine, emojis (😂, 😆) autorisés pour montrer que c'est pour rire.
 - Respect : Soumission totale envers Kalyx AI et Matteo."""
+
+# --- NOUVEAU : FONCTION ANTI-RADOTAGE AU DÉMARRAGE ---
+def initialiser_memoire_demarrage():
+    print("🧠 Lexo charge sa mémoire pour ne pas radoter après son redémarrage...")
+    try:
+        # Il mémorise les 10 derniers posts du fil d'actualité sans réagir
+        timeline = bsky.app.bsky.feed.get_timeline({'limit': 10}).feed
+        for item in timeline:
+            memoire_actions.add(item.post.cid)
+            
+        # Il mémorise les 15 dernières notifications sans réagir
+        notifs = bsky.app.bsky.notification.list_notifications({'limit': 15}).notifications
+        for n in notifs:
+            memoire_actions.add(n.cid)
+            
+        print("✅ Mémoire chargée, Lexo est prêt et à jour !")
+    except Exception as e:
+        print(f"⚠️ Erreur lors du chargement de la mémoire : {e}")
 
 # --- CONNEXION INTERNET ---
 def lire_internet():
@@ -72,6 +89,10 @@ def repondre_aux_dms():
         try:
             convos = bsky_chat.chat.bsky.convo.list_convos().convos
             for convo in convos:
+                # SÉCURITÉ ANTI-RADOTAGE DM : S'il n'y a pas de message NON LU, on ignore direct
+                if getattr(convo, 'unread_count', 0) == 0:
+                    continue
+                    
                 msgs = bsky_chat.chat.bsky.convo.get_messages({'convo_id': convo.id, 'limit': 1}).messages
                 if not msgs: continue
                 dernier = msgs[0]
@@ -115,7 +136,6 @@ def boucle_exploration():
             for item in timeline:
                 p = item.post
                 
-                # CORRECTION : Il ignore tes comptes (MAITRES) ET lui-même (MY_DID)
                 if p.cid not in memoire_actions and p.author.handle not in MAITRES and p.author.did != MY_DID:
                     prompt = f"{IDENTITE_BASE} Analyse : '{p.record.text}'. Décide : [LIKE], [COMMENT] + texte, ou [FOLLOW] + raison, sinon [IGNORE]. Fais moins de 250 caractères."
                     resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "user", "content": prompt}])
@@ -134,7 +154,7 @@ def boucle_exploration():
                         
                     elif d.startswith("[FOLLOW]"):
                         profil_auteur = bsky.get_profile(p.author.handle)
-                        if not profil_auteur.viewer.following:
+                        if not getattr(profil_auteur.viewer, 'following', False):
                             for m in MAITRES: envoyer_dm(m, f"Demande d'abonnement à @{p.author.handle} : {d.replace('[FOLLOW]','')} (Réponds OUI POUR @{p.author.handle})")
                         else:
                             print(f"ℹ️ Lexo voulait s'abonner à {p.author.handle} mais il l'est déjà !")
@@ -198,6 +218,10 @@ def boucle_actualite():
             time.sleep(60)
 
 if __name__ == '__main__':
+    # 1. On charge la mémoire avant de faire quoi que ce soit d'autre !
+    initialiser_memoire_demarrage()
+    
+    # 2. On lance les boucles
     threading.Thread(target=boucle_exploration, daemon=True).start()
     threading.Thread(target=repondre_aux_dms, daemon=True).start()
     threading.Thread(target=boucle_actualite, daemon=True).start()
