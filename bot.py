@@ -131,7 +131,16 @@ def boucle_exploration():
                         print(f"💬 Commentaire sur {p.author.handle}")
                         
                     elif d.startswith("[FOLLOW]"):
-                        for m in MAITRES: envoyer_dm(m, f"Demande d'abonnement à @{p.author.handle} : {d.replace('[FOLLOW]','')} (Réponds OUI POUR @{p.author.handle})")
+                        # CORRECTION DU BUG D'ABONNEMENT ICI
+                        profil_auteur = bsky.get_profile(p.author.handle)
+                        
+                        # Si Lexo n'est PAS encore abonné, il demande l'autorisation
+                        if not profil_auteur.viewer.following:
+                            for m in MAITRES: envoyer_dm(m, f"Demande d'abonnement à @{p.author.handle} : {d.replace('[FOLLOW]','')} (Réponds OUI POUR @{p.author.handle})")
+                        else:
+                            # S'il l'est déjà, il l'indique dans Render et passe à autre chose
+                            print(f"ℹ️ Lexo voulait s'abonner à {p.author.handle} mais il l'est déjà !")
+                            
                     memoire_actions.add(p.cid)
         except Exception as e:
             print(f"⚠️ Erreur boucle exploration : {e}")
