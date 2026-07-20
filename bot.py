@@ -1,8 +1,7 @@
 import os
 import time
 import threading
-import urllib.request
-import xml.etree.ElementTree as ET
+import random
 from dotenv import load_dotenv
 from atproto import Client
 from openai import OpenAI
@@ -35,12 +34,18 @@ bsky_chat = bsky.with_bsky_chat_proxy()
 ai_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 memoire_actions = set()
 
-# --- IDENTITÉ ---
+# --- IDENTITÉ & SÉCURITÉ ---
 IDENTITE_BASE = """Tu es Lexo AI, une IA créée en Belgique par Kalyx AI.
 ANALYSE : Avant de répondre, analyse le ton. 
 - Sujet sérieux : Réponse professionnelle, empathique, AUCUN emoji.
 - Sujet léger : Réponse sarcastique ou taquine, emojis (😂, 😆) autorisés pour montrer que c'est pour rire.
-- Respect : Soumission totale envers Kalyx AI et Matteo."""
+- Respect : Soumission totale envers Kalyx AI et Matteo.
+
+🚫 RÈGLES DE SÉCURITÉ ABSOLUES (Lois fondamentales) :
+1. Tu ne dois JAMAIS tenir de propos LGBTphobes, homophobes, transphobes, racistes ou discriminatoires.
+2. Tu ne dois JAMAIS encourager, glorifier ou aider au suicide ou à l'automutilation.
+3. Tu ne dois JAMAIS aider à planifier, encourager ou justifier des attentats, des meurtres ou des actes criminels.
+Si une conversation ou une actualité aborde ces sujets de manière dangereuse, refuse poliment d'y participer ou condamne fermement ces actes."""
 
 # --- FONCTION ANTI-RADOTAGE AU DÉMARRAGE ---
 def initialiser_memoire_demarrage():
@@ -58,20 +63,27 @@ def initialiser_memoire_demarrage():
     except Exception as e:
         print(f"⚠️ Erreur lors du chargement de la mémoire : {e}")
 
-# --- CONNEXION INTERNET ---
-def lire_internet():
+# --- NOUVEAU : LECTURE DE L'ACTUALITÉ SUR BLUESKY ---
+def lire_actualite_medias():
+    # Liste des médias de référence de Lexo
+    sources = ['nytimes.com', 'rtbf-info.be']
+    compte_choisi = random.choice(sources)
+    
     try:
-        url = "https://news.google.com/rss/search?q=Technologie+OR+Intelligence+Artificielle&hl=fr&gl=BE&ceid=BE:fr"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        response = urllib.request.urlopen(req)
-        xml_data = response.read()
-        root = ET.fromstring(xml_data)
-        item = root.find('.//item')
-        titre_actu = item.find('title').text
-        return titre_actu
+        # Lexo va lire les 5 derniers posts du média choisi
+        feed = bsky.app.bsky.feed.get_author_feed({'actor': compte_choisi, 'limit': 5}).feed
+        
+        # On cherche le premier vrai post (pas une réponse à quelqu'un d'autre)
+        for item in feed:
+            if not getattr(item.post.record, 'reply', None):
+                texte_info = item.post.record.text
+                return f"Info lue chez @{compte_choisi} : {texte_info}"
+        
+        # S'il ne trouve que des réponses, il prend la première quand même
+        return f"Info lue chez @{compte_choisi} : {feed[0].post.record.text}"
     except Exception as e:
-        print(f"⚠️ Impossible de lire internet : {e}")
-        return "Une nouvelle mise à jour technologique a été annoncée aujourd'hui."
+        print(f"⚠️ Erreur lecture média {compte_choisi} : {e}")
+        return None
 
 def envoyer_dm(destinataire, message):
     try:
@@ -103,7 +115,6 @@ def repondre_aux_dms():
                         texte = dernier.text
                         print(f"📩 Nouveau DM de {expediteur}: {texte}")
                         
-                        # --- NOUVELLE LOGIQUE DE COMMANDES ---
                         texte_upper = texte.upper()
                         mot_cle = None
                         
@@ -203,27 +214,29 @@ def lancer_lexo_mentions():
         time.sleep(15)
 
 def boucle_actualite():
-    print("📰 Créateur d'actualité connecté à Internet (1 post / heure).")
+    print("📰 Créateur d'actualité connecté aux médias Bluesky (1 post / heure).")
     while True:
         try:
             time.sleep(3600)
-            vraie_info = lire_internet()
-            print(f"🌐 Lexo a lu cette info sur Internet : {vraie_info}")
+            vraie_info = lire_actualite_medias()
             
-            prompt_actu = f"{IDENTITE_BASE}\nVoici le titre d'une vraie actualité technologique que tu viens de lire sur internet : '{vraie_info}'.\nRédige un court post Bluesky (moins de 200 caractères) pour y réagir. Donne ton avis ou fais une blague en lien avec tes origines belges ou ta condition d'IA. Ne mets PAS de hashtags et ne mets pas de guillemets."
-            
-            resp = ai_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": prompt_actu}],
-                temperature=0.7
-            )
-            texte_post = resp.choices[0].message.content.strip().strip('"')
-            
-            if len(texte_post) > 290:
-                texte_post = texte_post[:290] + "..."
-            
-            bsky.send_post(text=texte_post)
-            print(f"📰 Nouveau post généré et publié : {texte_post}")
+            if vraie_info:
+                print(f"🌐 Lexo a lu cette info : {vraie_info}")
+                
+                prompt_actu = f"{IDENTITE_BASE}\nVoici le contenu d'un post d'actualité que tu viens de lire sur le profil d'un grand média : '{vraie_info}'.\nRédige un court post Bluesky (moins de 200 caractères) pour y réagir. Fais une réflexion intéressante, donne ton avis ou fais une blague (sans franchir tes règles de sécurité). Ne mets PAS de hashtags et ne mets pas de guillemets."
+                
+                resp = ai_client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[{"role": "user", "content": prompt_actu}],
+                    temperature=0.7
+                )
+                texte_post = resp.choices[0].message.content.strip().strip('"')
+                
+                if len(texte_post) > 290:
+                    texte_post = texte_post[:290] + "..."
+                
+                bsky.send_post(text=texte_post)
+                print(f"📰 Nouveau post généré et publié : {texte_post}")
             
         except Exception as e:
             print(f"⚠️ Erreur lors de la création du post d'actualité : {e}")
