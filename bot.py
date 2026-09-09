@@ -20,7 +20,8 @@ threading.Thread(target=run_server, daemon=True).start()
 load_dotenv()
 BSKY_HANDLE = os.getenv('BSKY_HANDLE')
 BSKY_PASSWORD = os.getenv('BSKY_PASSWORD')
-GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+AI_API_KEY = os.getenv('AI_API_KEY') # Nouvelle variable pour l'API
+AI_MODEL = "openai/gpt-oss-120b"     # Nouvelle variable pour le modèle
 
 MAITRES = ['matteo.kalyxsocial.eu', 'kalyxai.eu']
 COMPTES_OFFICIELS = ['bsky.app', 'mu.social', 'eurosky.social']
@@ -31,7 +32,8 @@ MY_DID = bsky.me.did
 
 bsky_chat = bsky.with_bsky_chat_proxy()
 
-ai_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
+# Client mis à jour avec OpenRouter (ou l'URL de votre nouveau fournisseur)
+ai_client = OpenAI(api_key=AI_API_KEY, base_url="https://openrouter.ai/api/v1")
 memoire_actions = set()
 
 # --- IDENTITÉ & SÉCURITÉ ---
@@ -137,7 +139,7 @@ def repondre_aux_dms():
                             except Exception as e:
                                 reponse = f"⚠️ Erreur lors de l'abonnement : {e}"
                         else:
-                            resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"{expediteur} dit : {texte}"}])
+                            resp = ai_client.chat.completions.create(model=AI_MODEL, messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"{expediteur} dit : {texte}"}])
                             reponse = resp.choices[0].message.content
                         
                         bsky_chat.chat.bsky.convo.send_message({'convo_id': convo.id, 'message': {'text': reponse}})
@@ -161,7 +163,7 @@ def boucle_exploration():
                 
                 if p.cid not in memoire_actions and p.author.handle not in MAITRES and p.author.did != MY_DID:
                     prompt = f"{IDENTITE_BASE} Analyse : '{p.record.text}'. Décide : [LIKE], [COMMENT] + texte, ou [FOLLOW] + raison, sinon [IGNORE]. Fais moins de 250 caractères."
-                    resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "user", "content": prompt}])
+                    resp = ai_client.chat.completions.create(model=AI_MODEL, messages=[{"role": "user", "content": prompt}])
                     d = resp.choices[0].message.content.strip()
                     
                     if d.startswith("[LIKE]"): 
@@ -195,7 +197,7 @@ def lancer_lexo_mentions():
             for n in notifs:
                 if n.reason in ['mention', 'reply'] and n.cid not in memoire_actions:
                     print(f"🔔 Mention reçue de {n.author.handle}")
-                    resp = ai_client.chat.completions.create(model="llama-3.1-8b-instant", messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"Réponds à ce message (MAXIMUM 200 caractères) de {n.author.handle} : {n.record.text}"}])
+                    resp = ai_client.chat.completions.create(model=AI_MODEL, messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"Réponds à ce message (MAXIMUM 200 caractères) de {n.author.handle} : {n.record.text}"}])
                     reponse = resp.choices[0].message.content.strip()
                     
                     if len(reponse) > 290:
@@ -226,7 +228,7 @@ def boucle_actualite():
                 prompt_actu = f"{IDENTITE_BASE}\nVoici le contenu d'un post d'actualité que tu viens de lire sur le profil d'un grand média : '{vraie_info}'.\nRédige un court post Bluesky (moins de 200 caractères) pour y réagir. Fais une réflexion intéressante, donne ton avis ou fais une blague (sans franchir tes règles de sécurité). Ne mets PAS de hashtags et ne mets pas de guillemets."
                 
                 resp = ai_client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
+                    model=AI_MODEL,
                     messages=[{"role": "user", "content": prompt_actu}],
                     temperature=0.7
                 )
