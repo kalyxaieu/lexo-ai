@@ -20,8 +20,8 @@ threading.Thread(target=run_server, daemon=True).start()
 load_dotenv()
 BSKY_HANDLE = os.getenv('BSKY_HANDLE')
 BSKY_PASSWORD = os.getenv('BSKY_PASSWORD')
-AI_API_KEY = os.getenv('AI_API_KEY') # Nouvelle variable pour l'API
-AI_MODEL = "openai/gpt-oss-120b"     # Nouvelle variable pour le modèle
+GROQ_API_KEY = os.getenv('GROQ_API_KEY') # Retour à la clé Groq
+AI_MODEL = "openai/gpt-oss-120b"         # Votre nouveau modèle
 
 MAITRES = ['matteo.kalyxsocial.eu', 'kalyxai.eu']
 COMPTES_OFFICIELS = ['bsky.app', 'mu.social', 'eurosky.social']
@@ -32,8 +32,8 @@ MY_DID = bsky.me.did
 
 bsky_chat = bsky.with_bsky_chat_proxy()
 
-# Client mis à jour avec OpenRouter (ou l'URL de votre nouveau fournisseur)
-ai_client = OpenAI(api_key=AI_API_KEY, base_url="https://openrouter.ai/api/v1")
+# Client OpenAI configuré pour les serveurs de Groq
+ai_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 memoire_actions = set()
 
 # --- IDENTITÉ & SÉCURITÉ ---
