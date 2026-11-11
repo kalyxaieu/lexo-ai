@@ -101,56 +101,111 @@ def repondre_aux_dms():
         try:
             convos = bsky_chat.chat.bsky.convo.list_convos().convos
             for convo in convos:
-                if getattr(convo, 'unread_count', 0) == 0:
-                    continue
-                    
-                msgs = bsky_chat.chat.bsky.convo.get_messages({'convo_id': convo.id, 'limit': 1}).messages
-                if not msgs: continue
-                dernier = msgs[0]
-                
-                sender_did = dernier.sender.did
-                if sender_did != MY_DID:
-                    msg_id = f"{convo.id}_{dernier.id}"
-                    if msg_id not in memoire_actions:
-                        profil_expediteur = bsky.get_profile(sender_did)
-                        expediteur = profil_expediteur.handle
-                        texte = dernier.text
-                        print(f"📩 Nouveau DM de {expediteur}: {texte}")
-                        
-                        texte_upper = texte.upper()
-                        mot_cle = None
-                        
-                        if "OUI POUR @" in texte_upper:
-                            mot_cle = "OUI POUR @"
-                        elif "ABONNE TOI À @" in texte_upper:
-                            mot_cle = "ABONNE TOI À @"
-                        elif "ABONNE TOI A @" in texte_upper:
-                            mot_cle = "ABONNE TOI A @"
-                        elif "ABONNE-TOI À @" in texte_upper:
-                            mot_cle = "ABONNE-TOI À @"
-                        elif "ABONNE-TOI A @" in texte_upper:
-                            mot_cle = "ABONNE-TOI A @"
+                try:
+                    if getattr(convo, 'unread_count', 0) == 0:
+                        continue
 
-                        if expediteur in MAITRES and mot_cle:
-                            cible = texte_upper.split(mot_cle)[1].split()[0].strip('.,!?;:')
-                            try:
-                                bsky.follow(bsky.get_profile(cible).did)
-                                reponse = f"✅ Abonnement à @{cible} effectué, Maître."
-                            except Exception as e:
-                                reponse = f"⚠️ Erreur lors de l'abonnement : {e}"
-                        else:
-                            resp = ai_client.chat.completions.create(model=AI_MODEL, messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"{expediteur} dit : {texte}"}])
-                            reponse = resp.choices[0].message.content
-                        
-                        bsky_chat.chat.bsky.convo.send_message({'convo_id': convo.id, 'message': {'text': reponse}})
+                    msgs = bsky_chat.chat.bsky.convo.get_messages({'convo_id': convo.id, 'limit': 1}).messages
+                    if not msgs:
+                        continue
+
+                    dernier = msgs[0]
+                    sender_did = dernier.sender.did
+                    if sender_did == MY_DID:
+                        continue
+
+                    msg_id = f"{convo.id}_{dernier.id}"
+                    if msg_id in memoire_actions:
+                        continue
+
+                    profil_expediteur = bsky.get_profile(sender_did)
+                    expediteur = profil_expediteur.handle
+                    texte = dernier.text or ""
+                    print(f"📩 Nouveau DM de {expediteur}: {texte}")
+
+                    texte_upper = texte.upper()
+                    mot_cle = None
+
+                    if "OUI POUR @" in texte_upper:
+                        mot_cle = "OUI POUR @"
+                    elif "ABONNE TOI À @" in texte_upper:
+                        mot_cle = "ABONNE TOI À @"
+                    elif "ABONNE TOI A @" in texte_upper:
+                        mot_cle = "ABONNE TOI A @"
+                    elif "ABONNE-TOI À @" in texte_upper:
+                        mot_cle = "ABONNE-TOI À @"
+                    elif "ABONNE-TOI A @" in texte_upper:
+                        mot_cle = "ABONNE-TOI A @"
+
+                    if expediteur in MAITRES and mot_cle:
+                        cible = texte_upper.split(mot_cle)[1].split()[0].strip('.,!?;:')
                         try:
-                            bsky_chat.chat.bsky.convo.update_read({'convo_id': convo.id, 'message_id': dernier.id})
+                            bsky.follow(bsky.get_profile(cible).did)
+                            reponse = f"✅ Abonnement à @{cible} effectué, Maître."
                         except Exception as e:
-                            pass
-                            
-                        memoire_actions.add(msg_id)
+                            reponse = f"⚠️ Erreur lors de l'abonnement : {e}"
+                    else:
+                        resp = ai_client.chat.completions.create(
+                            model=AI_MODEL,
+                            messages=[
+                                {"role": "system", "content": IDENTITE_BASE},
+                                {"role": "user", "content": f"{expediteur} dit : {texte}"}
+                            ]
+                        )
+                        reponse = resp.choices[0].message.content or ""
+
+                    reponse = reponse.strip()
+                    if not reponse:
+                        print(f"⚠️ Réponse vide générée pour {expediteur}; le DM sera retenté.")
+                        continue
+
+                    # Bluesky limite le texte d'un DM à 1 000 graphèmes.
+                    # 900 points de code constituent une marge de sécurité.
+                    if len(reponse) > 900:
+                        reponse = reponse[:897].rstrip() + "..."
+                        print(f"✂️ Réponse DM raccourcie à 900 caractères pour {expediteur}.")
+
+                    try:
+                        bsky_chat.chat.bsky.convo.send_message({
+                            'convo_id': convo.id,
+                            'message': {'text': reponse}
+                        })
+                    except Exception as send_error:
+                        erreur = str(send_error)
+                        if "BlockedActor" in erreur:
+                            print(f"🚫 DM ignoré pour {expediteur} : blocage Bluesky entre les comptes.")
+                            # Ne pas retenter sans fin un message impossible à envoyer.
+                            memoire_actions.add(msg_id)
+                            try:
+                                bsky_chat.chat.bsky.convo.update_read({
+                                    'convo_id': convo.id,
+                                    'message_id': dernier.id
+                                })
+                            except Exception:
+                                pass
+                        else:
+                            print(f"⚠️ Échec d'envoi du DM à {expediteur}; nouvelle tentative au prochain cycle : {send_error}")
+                        continue
+
+                    try:
+                        bsky_chat.chat.bsky.convo.update_read({
+                            'convo_id': convo.id,
+                            'message_id': dernier.id
+                        })
+                    except Exception as read_error:
+                        print(f"⚠️ Impossible de marquer le DM de {expediteur} comme lu : {read_error}")
+
+                    memoire_actions.add(msg_id)
+                    print(f"✅ Réponse DM envoyée à {expediteur}.")
+
+                except Exception as convo_error:
+                    # Une conversation défectueuse ne doit pas interrompre les autres.
+                    print(f"⚠️ Erreur sur une conversation DM ({getattr(convo, 'id', 'inconnue')}) : {convo_error}")
+                    continue
+
         except Exception as e:
             print(f"⚠️ Erreur globale boucle DM : {e}")
+
         time.sleep(20)
 
 def boucle_exploration():
