@@ -63,7 +63,7 @@ def nettoyer_anciennes_publications():
     Supprime toutes les publications déjà présentes dans le dépôt Lexo.
     Le bot ne lance aucune autre boucle avant la fin du nettoyage.
     """
-    marqueur = os.getenv("LEXO_CLEANUP_MARKER", "/tmp/lexo_old_posts_cleanup_v2.done")
+    marqueur = os.getenv("LEXO_CLEANUP_MARKER_V2", "/tmp/lexo_old_posts_cleanup_v2.done")
     if os.path.exists(marqueur):
         print("🧹 Nettoyage complet déjà effectué (marqueur v2).")
         return True
