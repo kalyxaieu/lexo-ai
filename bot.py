@@ -60,80 +60,121 @@ Si une conversation ou une actualité aborde ces sujets de manière dangereuse, 
 # --- FONCTION ANTI-RADOTAGE AU DÉMARRAGE ---
 def nettoyer_anciennes_publications():
     """
-    Nettoyage unique avec reprise automatique après limitation 429.
-    Le nettoyage ne démarre les autres boucles qu'une fois terminé.
+    Supprime par lots les posts Lexo présents avant le lancement du nettoyage.
+    Les posts publiés après la date de coupure sont conservés, même si Render
+    redémarre et perd son stockage temporaire.
     """
     marqueur = os.getenv("LEXO_CLEANUP_MARKER", "/tmp/lexo_old_posts_cleanup.done")
     if os.path.exists(marqueur):
         print("🧹 Nettoyage initial déjà effectué.")
         return
 
-    print("🧹 Nettoyage des anciennes publications Lexo démarré...")
+    # Date de la première exécution de nettoyage observée dans les journaux.
+    # Modifiable dans les variables Render si une autre date de coupure est voulue.
+    date_coupure = os.getenv("LEXO_CLEANUP_BEFORE", "2026-11-23T23:24:44+00:00")
+    date_coupure = datetime.fromisoformat(date_coupure.replace("Z", "+00:00"))
+
+    print(f"🧹 Nettoyage par lots démarré (publications avant {date_coupure.isoformat()}).")
     supprimees = 0
-    vues = set()
+    lots = 0
+
+    def est_limitation_429(erreur):
+        statut = getattr(erreur, "status_code", None) or getattr(erreur, "status", None)
+        return statut == 429 or "429" in str(erreur) or "Too Many Requests" in str(erreur)
 
     def appeler_avec_reessais(operation, description):
-        attente = 30
-        for tentative in range(1, 7):
+        attente = 10
+        for tentative in range(1, 8):
             try:
                 return operation()
             except Exception as erreur:
-                message = str(erreur)
-                if "429" not in message and "Too Many Requests" not in message:
+                if not est_limitation_429(erreur):
                     raise
-                if tentative == 6:
+                if tentative == 7:
                     raise
+                reponse = getattr(erreur, "response", None)
+                entetes = getattr(reponse, "headers", {}) or {}
+                retry_after = entetes.get("Retry-After") or entetes.get("retry-after")
+                try:
+                    delai = max(1, int(float(retry_after))) if retry_after else attente
+                except (TypeError, ValueError):
+                    delai = attente
                 print(
-                    f"⏳ Limite Bluesky pendant {description}. "
-                    f"Pause de {attente}s (essai {tentative}/6)..."
+                    f"⏳ Bluesky limite les requêtes pendant {description}. "
+                    f"Nouvel essai dans {delai}s ({tentative}/7)."
                 )
-                time.sleep(attente)
-                attente = min(attente * 2, 300)
+                time.sleep(delai)
+                attente = min(attente * 2, 180)
+        raise RuntimeError("Nombre maximal de tentatives atteint.")
 
     try:
-        cursor = None
+        curseur = None
+        curseurs_vus = set()
         while True:
-            params = {"actor": MY_DID, "limit": 100}
-            if cursor:
-                params["cursor"] = cursor
+            params = {"repo": MY_DID, "collection": "app.bsky.feed.post", "limit": 100}
+            if curseur:
+                params["cursor"] = curseur
 
             page = appeler_avec_reessais(
-                lambda: bsky.app.bsky.feed.get_author_feed(params),
-                "lecture de la page"
+                lambda: bsky.com.atproto.repo.list_records(params),
+                "lecture des publications"
             )
 
-            for item in page.feed:
-                post = item.post
-                if post.author.did != MY_DID or post.uri in vues:
+            # Ne garder que les publications dont la date est antérieure à la coupure.
+            operations = []
+            for record in page.records:
+                valeur = record.value
+                cree_le = getattr(valeur, "created_at", None)
+                if not cree_le:
                     continue
-                vues.add(post.uri)
-                rkey = post.uri.rsplit("/", 1)[-1]
+                try:
+                    date_creation = datetime.fromisoformat(cree_le.replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    continue
+                if date_creation >= date_coupure:
+                    continue
 
+                rkey = record.uri.rsplit("/", 1)[-1]
+                operations.append({
+                    "$type": "com.atproto.repo.applyWrites#delete",
+                    "collection": "app.bsky.feed.post",
+                    "rkey": rkey
+                })
+
+            # Un seul appel réseau pour 20 suppressions au lieu de 20 appels.
+            for debut in range(0, len(operations), 20):
+                lot = operations[debut:debut + 20]
                 appeler_avec_reessais(
-                    lambda rkey=rkey: bsky.com.atproto.repo.delete_record({
+                    lambda lot=lot: bsky.com.atproto.repo.apply_writes({
                         "repo": MY_DID,
-                        "collection": "app.bsky.feed.post",
-                        "rkey": rkey
+                        "writes": lot
                     }),
-                    f"suppression de la publication {supprimees + 1}"
+                    f"suppression du lot {lots + 1}"
                 )
-                supprimees += 1
-                print(f"🗑️ Ancienne publication Lexo supprimée ({supprimees}).")
-                # Petite pause pour lisser les requêtes sans ralentir inutilement.
-                time.sleep(0.15)
+                lots += 1
+                supprimees += len(lot)
+                print(f"🗑️ {supprimees} publication(s) supprimée(s) ({lots} lots).")
+                time.sleep(0.5)
 
-            nouveau_cursor = getattr(page, "cursor", None)
-            if not nouveau_cursor or nouveau_cursor == cursor:
+            nouveau_curseur = getattr(page, "cursor", None)
+            if not nouveau_curseur:
                 break
-            cursor = nouveau_cursor
+            if nouveau_curseur == curseur or nouveau_curseur in curseurs_vus:
+                raise RuntimeError("Pagination Bluesky bloquée : curseur répété.")
+            curseurs_vus.add(nouveau_curseur)
+            curseur = nouveau_curseur
 
         with open(marqueur, "w", encoding="utf-8") as fichier:
             fichier.write("done")
-        print(f"✅ Nettoyage terminé : {supprimees} publication(s) supprimée(s).")
-    except Exception as e:
         print(
-            f"⚠️ Nettoyage interrompu après {supprimees} suppression(s) : {e}. "
-            "Il reprendra au prochain démarrage."
+            f"✅ Nettoyage terminé : {supprimees} publication(s) supprimée(s) "
+            f"en {lots} lots. Les publications postérieures à la date de coupure sont conservées."
+        )
+    except Exception as erreur:
+        print(
+            f"⚠️ Nettoyage interrompu après {supprimees} suppression(s) : {erreur}. "
+            "Les publications déjà supprimées ne seront plus présentes dans le dépôt ; "
+            "le prochain démarrage pourra continuer avec les publications restantes."
         )
 
 
