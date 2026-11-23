@@ -60,80 +60,120 @@ Si une conversation ou une actualité aborde ces sujets de manière dangereuse, 
 # --- FONCTION ANTI-RADOTAGE AU DÉMARRAGE ---
 def nettoyer_anciennes_publications():
     """
-    Supprime par lots les posts Lexo présents avant le lancement du nettoyage.
-    Les posts publiés après la date de coupure sont conservés, même si Render
-    redémarre et perd son stockage temporaire.
+    Supprime toutes les publications déjà présentes dans le dépôt Lexo.
+    Le bot ne lance aucune autre boucle avant la fin du nettoyage.
     """
-    marqueur = os.getenv("LEXO_CLEANUP_MARKER", "/tmp/lexo_old_posts_cleanup.done")
+    marqueur = os.getenv("LEXO_CLEANUP_MARKER", "/tmp/lexo_old_posts_cleanup_v2.done")
     if os.path.exists(marqueur):
-        print("🧹 Nettoyage initial déjà effectué.")
+        print("🧹 Nettoyage complet déjà effectué (marqueur v2).")
         return True
 
-    # Date de la première exécution de nettoyage observée dans les journaux.
-    # Modifiable dans les variables Render si une autre date de coupure est voulue.
-    date_coupure = os.getenv("LEXO_CLEANUP_BEFORE", "2026-11-23T23:24:44+00:00")
-    date_coupure = datetime.fromisoformat(date_coupure.replace("Z", "+00:00"))
-
-    print(f"🧹 Nettoyage par lots démarré (publications avant {date_coupure.isoformat()}).")
+    print("🧹 Nettoyage complet démarré : toutes les publications existantes sont ciblées.")
     supprimees = 0
     lots = 0
 
-    def est_limitation_429(erreur):
-        statut = getattr(erreur, "status_code", None) or getattr(erreur, "status", None)
-        return statut == 429 or "429" in str(erreur) or "Too Many Requests" in str(erreur)
+    def statut_erreur(erreur):
+        return (
+            getattr(erreur, "status_code", None)
+            or getattr(erreur, "status", None)
+            or getattr(getattr(erreur, "response", None), "status_code", None)
+        )
 
     def appeler_avec_reessais(operation, description):
-        attente = 10
+        attente = 5
         for tentative in range(1, 8):
             try:
                 return operation()
             except Exception as erreur:
-                if not est_limitation_429(erreur):
+                statut = statut_erreur(erreur)
+                transitoire = statut == 429 or statut in (500, 502, 503, 504)
+                if not transitoire or tentative == 7:
                     raise
-                if tentative == 7:
-                    raise
-                reponse = getattr(erreur, "response", None)
-                entetes = getattr(reponse, "headers", {}) or {}
+
+                entetes = getattr(getattr(erreur, "response", None), "headers", {}) or {}
                 retry_after = entetes.get("Retry-After") or entetes.get("retry-after")
                 try:
                     delai = max(1, int(float(retry_after))) if retry_after else attente
                 except (TypeError, ValueError):
                     delai = attente
+
                 print(
-                    f"⏳ Bluesky limite les requêtes pendant {description}. "
-                    f"Nouvel essai dans {delai}s ({tentative}/7)."
+                    f"⏳ Réponse Bluesky {statut} pendant {description}; "
+                    f"nouvel essai dans {delai}s ({tentative}/7)."
                 )
                 time.sleep(delai)
-                attente = min(attente * 2, 180)
-        raise RuntimeError("Nombre maximal de tentatives atteint.")
+                attente = min(attente * 2, 120)
 
-    try:
-        curseur = None
-        curseurs_vus = set()
-        while True:
-            params = {"repo": MY_DID, "collection": "app.bsky.feed.post", "limit": 100}
-            if curseur:
-                params["cursor"] = curseur
+    def supprimer_lot(operations):
+        """Tente applyWrites; en cas d'erreur serveur, divise le lot puis utilise deleteRecord."""
+        nonlocal supprimees, lots
+        if not operations:
+            return
 
-            page = appeler_avec_reessais(
-                lambda: bsky.com.atproto.repo.list_records(params),
-                "lecture des publications"
+        try:
+            appeler_avec_reessais(
+                lambda: bsky.com.atproto.repo.apply_writes(
+                    models.ComAtprotoRepoApplyWrites.Data(
+                        repo=MY_DID,
+                        writes=operations
+                    )
+                ),
+                f"suppression d'un lot de {len(operations)}"
+            )
+            supprimees += len(operations)
+            lots += 1
+            print(f"🗑️ {supprimees} publication(s) supprimée(s) ({lots} lots).")
+            time.sleep(0.4)
+            return
+        except Exception as erreur_lot:
+            print(
+                f"⚠️ Lot de {len(operations)} refusé ({erreur_lot}); "
+                "activation du mode de repli."
             )
 
-            # Ne garder que les publications dont la date est antérieure à la coupure.
-            operations = []
-            for record in page.records:
-                valeur = record.value
-                cree_le = getattr(valeur, "created_at", None)
-                if not cree_le:
-                    continue
-                try:
-                    date_creation = datetime.fromisoformat(cree_le.replace("Z", "+00:00"))
-                except (TypeError, ValueError):
-                    continue
-                if date_creation >= date_coupure:
-                    continue
+        if len(operations) > 1:
+            milieu = len(operations) // 2
+            supprimer_lot(operations[:milieu])
+            supprimer_lot(operations[milieu:])
+            return
 
+        operation = operations[0]
+        try:
+            appeler_avec_reessais(
+                lambda: bsky.app.bsky.feed.post.delete(
+                    MY_DID,
+                    operation.rkey
+                ),
+                f"suppression individuelle {operation.rkey}"
+            )
+            supprimees += 1
+            print(f"🗑️ Publication supprimée individuellement : {supprimees}.")
+            time.sleep(0.8)
+        except Exception as erreur_individuelle:
+            raise RuntimeError(
+                f"Impossible de supprimer la publication {operation.rkey}: "
+                f"{erreur_individuelle}"
+            ) from erreur_individuelle
+
+    try:
+        # Reprendre toujours la première page : aucune publication ne peut être
+        # sautée par un curseur devenu obsolète après suppression.
+        while True:
+            page = appeler_avec_reessais(
+                lambda: bsky.com.atproto.repo.list_records({
+                    "repo": MY_DID,
+                    "collection": "app.bsky.feed.post",
+                    "limit": 100
+                }),
+                "lecture des publications restantes"
+            )
+
+            enregistrements = page.records or []
+            if not enregistrements:
+                break
+
+            operations = []
+            for record in enregistrements:
                 rkey = record.uri.rsplit("/", 1)[-1]
                 operations.append(
                     models.ComAtprotoRepoApplyWrites.Delete(
@@ -142,46 +182,36 @@ def nettoyer_anciennes_publications():
                     )
                 )
 
-            # Un seul appel réseau pour 20 suppressions au lieu de 20 appels.
-            for debut in range(0, len(operations), 20):
-                lot = operations[debut:debut + 20]
-                appeler_avec_reessais(
-                    lambda lot=lot: bsky.com.atproto.repo.apply_writes(
-                        models.ComAtprotoRepoApplyWrites.Data(
-                            repo=MY_DID,
-                            writes=lot
-                        )
-                    ),
-                    f"suppression du lot {lots + 1}"
-                )
-                lots += 1
-                supprimees += len(lot)
-                print(f"🗑️ {supprimees} publication(s) supprimée(s) ({lots} lots).")
-                time.sleep(0.5)
+            # Petits lots : si le PDS refuse un lot, le repli divise celui-ci
+            # jusqu'à pouvoir utiliser deleteRecord pour chaque publication.
+            for debut in range(0, len(operations), 10):
+                supprimer_lot(operations[debut:debut + 10])
 
-            nouveau_curseur = getattr(page, "cursor", None)
-            if not nouveau_curseur:
-                break
-            if nouveau_curseur == curseur or nouveau_curseur in curseurs_vus:
-                raise RuntimeError("Pagination Bluesky bloquée : curseur répété.")
-            curseurs_vus.add(nouveau_curseur)
-            curseur = nouveau_curseur
+            time.sleep(0.5)
+
+        # Vérification finale avant d'écrire le marqueur de fin.
+        verification = appeler_avec_reessais(
+            lambda: bsky.com.atproto.repo.list_records({
+                "repo": MY_DID,
+                "collection": "app.bsky.feed.post",
+                "limit": 1
+            }),
+            "vérification finale"
+        )
+        if verification.records:
+            raise RuntimeError("Des publications sont encore présentes après le nettoyage.")
 
         with open(marqueur, "w", encoding="utf-8") as fichier:
             fichier.write("done")
-        print(
-            f"✅ Nettoyage terminé : {supprimees} publication(s) supprimée(s) "
-            f"en {lots} lots. Les publications postérieures à la date de coupure sont conservées."
-        )
+        print(f"✅ Nettoyage terminé : {supprimees} publication(s) supprimée(s).")
         return True
+
     except Exception as erreur:
         print(
-            f"⚠️ Nettoyage interrompu après {supprimees} suppression(s) : {erreur}. "
-            "Les publications déjà supprimées ne seront plus présentes dans le dépôt ; "
-            "le prochain démarrage pourra continuer avec les publications restantes."
+            f"⚠️ Nettoyage incomplet après {supprimees} suppression(s) : {erreur}. "
+            "Le bot restera en attente et réessaiera sans lancer ses autres activités."
         )
         return False
-
 
 def initialiser_memoire_demarrage():
     print("🧠 Lexo charge sa mémoire pour ne pas radoter après son redémarrage...")
