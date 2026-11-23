@@ -4,7 +4,7 @@ import threading
 import random
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-from atproto import Client
+from atproto import Client, models
 from openai import OpenAI
 from flask import Flask
 
@@ -135,20 +135,23 @@ def nettoyer_anciennes_publications():
                     continue
 
                 rkey = record.uri.rsplit("/", 1)[-1]
-                operations.append({
-                    "$type": "com.atproto.repo.applyWrites#delete",
-                    "collection": "app.bsky.feed.post",
-                    "rkey": rkey
-                })
+                operations.append(
+                    models.ComAtprotoRepoApplyWrites.Delete(
+                        collection="app.bsky.feed.post",
+                        rkey=rkey
+                    )
+                )
 
             # Un seul appel réseau pour 20 suppressions au lieu de 20 appels.
             for debut in range(0, len(operations), 20):
                 lot = operations[debut:debut + 20]
                 appeler_avec_reessais(
-                    lambda lot=lot: bsky.com.atproto.repo.apply_writes({
-                        "repo": MY_DID,
-                        "writes": lot
-                    }),
+                    lambda lot=lot: bsky.com.atproto.repo.apply_writes(
+                        models.ComAtprotoRepoApplyWrites.Data(
+                            repo=MY_DID,
+                            writes=lot
+                        )
+                    ),
                     f"suppression du lot {lots + 1}"
                 )
                 lots += 1
