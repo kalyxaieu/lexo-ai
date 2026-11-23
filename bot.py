@@ -2,6 +2,7 @@ import os
 import time
 import threading
 import random
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from atproto import Client
 from openai import OpenAI
@@ -35,6 +36,13 @@ bsky_chat = bsky.with_bsky_chat_proxy()
 # Client OpenAI configuré pour les serveurs de Groq
 ai_client = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 memoire_actions = set()
+FENETRE_LECTURE_SECONDES = 21600
+MAX_POSTS_LUS_PAR_FENETRE = 5
+MAX_LIKES_PAR_FENETRE = 5
+dernier_scan = 0.0
+likes_dans_fenetre = 0
+date_dernier_post = None
+verrou_limites = threading.Lock()
 
 # --- IDENTITÉ & SÉCURITÉ ---
 IDENTITE_BASE = """Tu es Lexo AI, une IA créée en Belgique par Kalyx AI.
@@ -124,6 +132,28 @@ def repondre_aux_dms():
                     print(f"📩 Nouveau DM de {expediteur}: {texte}")
 
                     texte_upper = texte.upper()
+                    demande_blocage = any(term in texte.lower() for term in (
+                        "bloque-moi", "bloque moi", "bloquez-moi", "bloquez moi",
+                        "block me", "please block me", "je veux être bloqué",
+                        "je souhaite être bloqué"
+                    ))
+                    if demande_blocage:
+                        try:
+                            bsky.app.bsky.graph.block.create_record({
+                                'subject': sender_did,
+                                'createdAt': bsky.get_current_time_iso()
+                            })
+                            print(f"Blocage demande par @{expediteur} effectue.")
+                        except Exception as block_error:
+                            print(f"Impossible de bloquer @{expediteur} : {block_error}")
+                        memoire_actions.add(msg_id)
+                        try:
+                            bsky_chat.chat.bsky.convo.update_read({
+                                'convo_id': convo.id, 'message_id': dernier.id
+                            })
+                        except Exception:
+                            pass
+                        continue
                     mot_cle = None
 
                     if "OUI POUR @" in texte_upper:
@@ -209,95 +239,127 @@ def repondre_aux_dms():
         time.sleep(20)
 
 def boucle_exploration():
-    print("🔭 Exploration du fil d'actualité activée.")
+    """Lit au plus cinq posts toutes les six heures, sans commentaire spontané."""
+    global dernier_scan, likes_dans_fenetre
+    print("Exploration limitee : 5 posts maximum toutes les 6 heures.")
     while True:
         try:
-            timeline = bsky.app.bsky.feed.get_timeline({'limit': 5}).feed
-            for item in timeline:
+            maintenant = time.time()
+            with verrou_limites:
+                if dernier_scan and maintenant - dernier_scan < FENETRE_LECTURE_SECONDES:
+                    attente = FENETRE_LECTURE_SECONDES - (maintenant - dernier_scan)
+                else:
+                    dernier_scan = maintenant
+                    likes_dans_fenetre = 0
+                    attente = 0
+            if attente > 0:
+                time.sleep(min(attente, 300))
+                continue
+
+            timeline = bsky.app.bsky.feed.get_timeline({'limit': MAX_POSTS_LUS_PAR_FENETRE}).feed
+            for item in timeline[:MAX_POSTS_LUS_PAR_FENETRE]:
                 p = item.post
-                
-                if p.cid not in memoire_actions and p.author.handle not in MAITRES and p.author.did != MY_DID:
-                    prompt = f"{IDENTITE_BASE} Analyse : '{p.record.text}'. Décide : [LIKE], [COMMENT] + texte, ou [FOLLOW] + raison, sinon [IGNORE]. Fais moins de 250 caractères."
-                    resp = ai_client.chat.completions.create(model=AI_MODEL, messages=[{"role": "user", "content": prompt}])
-                    d = resp.choices[0].message.content.strip()
-                    
-                    if d.startswith("[LIKE]"): 
-                        bsky.like(p.uri, p.cid)
-                        print(f"👍 Like sur {p.author.handle}")
-                        
-                    elif d.startswith("[COMMENT]") and p.author.handle not in COMPTES_OFFICIELS: 
-                        commentaire = d.replace("[COMMENT]","").strip()
-                        if len(commentaire) > 290:
-                            commentaire = commentaire[:290] + "..."
-                        bsky.send_post(text=commentaire, reply_to={'root': {'uri': p.uri, 'cid': p.cid}, 'parent': {'uri': p.uri, 'cid': p.cid}})
-                        print(f"💬 Commentaire sur {p.author.handle}")
-                        
-                    elif d.startswith("[FOLLOW]"):
-                        profil_auteur = bsky.get_profile(p.author.handle)
-                        if not getattr(profil_auteur.viewer, 'following', False):
-                            for m in MAITRES: envoyer_dm(m, f"Demande d'abonnement à @{p.author.handle} : {d.replace('[FOLLOW]','')} (Réponds OUI POUR @{p.author.handle})")
-                        else:
-                            print(f"ℹ️ Lexo voulait s'abonner à {p.author.handle} mais il l'est déjà !")
-                            
-                    memoire_actions.add(p.cid)
+                if p.cid in memoire_actions or p.author.did == MY_DID or p.author.handle in MAITRES:
+                    continue
+                with verrou_limites:
+                    if likes_dans_fenetre >= MAX_LIKES_PAR_FENETRE:
+                        memoire_actions.add(p.cid)
+                        continue
+                prompt = (
+                    f"{IDENTITE_BASE} Analyse ce post : '{p.record.text}'. "
+                    "Réponds uniquement [LIKE] ou [IGNORE]. Aucun commentaire, "
+                    "aucune réponse spontanée et aucun abonnement."
+                )
+                resp = ai_client.chat.completions.create(
+                    model=AI_MODEL, messages=[{"role": "user", "content": prompt}]
+                )
+                decision = (resp.choices[0].message.content or "").strip()
+                if decision.startswith("[LIKE]"):
+                    with verrou_limites:
+                        if likes_dans_fenetre < MAX_LIKES_PAR_FENETRE:
+                            bsky.like(p.uri, p.cid)
+                            likes_dans_fenetre += 1
+                            print(f"Like limite sur @{p.author.handle}")
+                memoire_actions.add(p.cid)
         except Exception as e:
-            print(f"⚠️ Erreur boucle exploration : {e}")
-        time.sleep(1800)
+            print(f"Erreur boucle exploration : {e}")
+        time.sleep(FENETRE_LECTURE_SECONDES)
+
 
 def lancer_lexo_mentions():
-    print("🤖 Surveillance des mentions activée.")
+    print("Surveillance des mentions et reponses directes activee.")
     while True:
         try:
-            notifs = bsky.app.bsky.notification.list_notifications().notifications
+            notifs = bsky.app.bsky.notification.list_notifications({'limit': 50}).notifications
             for n in notifs:
-                if n.reason in ['mention', 'reply'] and n.cid not in memoire_actions:
-                    print(f"🔔 Mention reçue de {n.author.handle}")
-                    resp = ai_client.chat.completions.create(model=AI_MODEL, messages=[{"role": "system", "content": IDENTITE_BASE}, {"role": "user", "content": f"Réponds à ce message (MAXIMUM 200 caractères) de {n.author.handle} : {n.record.text}"}])
-                    reponse = resp.choices[0].message.content.strip()
-                    
-                    if len(reponse) > 290:
-                        reponse = reponse[:290] + "..."
-                    
-                    root = n.record.reply.root if hasattr(n.record, 'reply') and n.record.reply else {'cid': n.cid, 'uri': n.uri}
+                if n.reason not in ['mention', 'reply'] or n.cid in memoire_actions:
+                    continue
+                try:
+                    resp = ai_client.chat.completions.create(
+                        model=AI_MODEL,
+                        messages=[
+                            {"role": "system", "content": IDENTITE_BASE},
+                            {"role": "user", "content":
+                             f"Réponds avec tact et brièvement (200 caractères maximum) à cette "
+                             f"mention ou réponse adressée à Lexo par @{n.author.handle} : "
+                             f"{getattr(n.record, 'text', '')}"}
+                        ]
+                    )
+                    reponse = (resp.choices[0].message.content or "").strip()
+                    if not reponse:
+                        memoire_actions.add(n.cid)
+                        continue
+                    if len(reponse) > 250:
+                        reponse = reponse[:247].rstrip() + "..."
+                    root = n.record.reply.root if getattr(n.record, 'reply', None) else {'cid': n.cid, 'uri': n.uri}
                     parent = {'cid': n.cid, 'uri': n.uri}
                     bsky.send_post(text=reponse, reply_to={'root': root, 'parent': parent})
                     memoire_actions.add(n.cid)
+                    print(f"Reponse envoyee a @{n.author.handle}")
+                except Exception as notification_error:
+                    print(f"Erreur traitement notification : {notification_error}")
             try:
                 bsky.app.bsky.notification.update_seen({'seen_at': bsky.get_current_time_iso()})
-            except:
+            except Exception:
                 pass
         except Exception as e:
-            print(f"⚠️ Erreur boucle mentions : {e}")
-        time.sleep(15)
+            print(f"Erreur boucle mentions : {e}")
+        time.sleep(30)
+
 
 def boucle_actualite():
-    print("📰 Créateur d'actualité connecté aux médias Bluesky (1 post / heure).")
+    """Publie au maximum un post original par jour."""
+    global date_dernier_post
+    print("Publication limitee a un post original par jour.")
     while True:
         try:
-            time.sleep(3600)
+            aujourd_hui = datetime.now(timezone.utc).date()
+            if date_dernier_post == aujourd_hui:
+                time.sleep(300)
+                continue
             vraie_info = lire_actualite_medias()
-            
             if vraie_info:
-                print(f"🌐 Lexo a lu cette info : {vraie_info}")
-                
-                prompt_actu = f"{IDENTITE_BASE}\nVoici le contenu d'un post d'actualité que tu viens de lire sur le profil d'un grand média : '{vraie_info}'.\nRédige un court post Bluesky (moins de 200 caractères) pour y réagir. Fais une réflexion intéressante, donne ton avis ou fais une blague (sans franchir tes règles de sécurité). Ne mets PAS de hashtags et ne mets pas de guillemets."
-                
+                prompt_actu = (
+                    f"{IDENTITE_BASE}\nInformation lue : '{vraie_info}'.\n"
+                    "Rédige une réaction courte, respectueuse et utile pour Bluesky. "
+                    "Moins de 200 caractères, sans hashtags ni guillemets."
+                )
                 resp = ai_client.chat.completions.create(
                     model=AI_MODEL,
                     messages=[{"role": "user", "content": prompt_actu}],
-                    temperature=0.7
+                    temperature=0.5
                 )
-                texte_post = resp.choices[0].message.content.strip().strip('"')
-                
-                if len(texte_post) > 290:
-                    texte_post = texte_post[:290] + "..."
-                
-                bsky.send_post(text=texte_post)
-                print(f"📰 Nouveau post généré et publié : {texte_post}")
-            
+                texte_post = (resp.choices[0].message.content or "").strip().strip('"')
+                if texte_post:
+                    if len(texte_post) > 290:
+                        texte_post = texte_post[:287].rstrip() + "..."
+                    bsky.send_post(text=texte_post)
+                    date_dernier_post = aujourd_hui
+                    print(f"Post quotidien publie : {texte_post}")
         except Exception as e:
-            print(f"⚠️ Erreur lors de la création du post d'actualité : {e}")
-            time.sleep(60)
+            print(f"Erreur publication quotidienne : {e}")
+        time.sleep(300)
+
 
 if __name__ == '__main__':
     initialiser_memoire_demarrage()
