@@ -67,7 +67,7 @@ def nettoyer_anciennes_publications():
     marqueur = os.getenv("LEXO_CLEANUP_MARKER", "/tmp/lexo_old_posts_cleanup.done")
     if os.path.exists(marqueur):
         print("🧹 Nettoyage initial déjà effectué.")
-        return
+        return True
 
     # Date de la première exécution de nettoyage observée dans les journaux.
     # Modifiable dans les variables Render si une autre date de coupure est voulue.
@@ -170,12 +170,14 @@ def nettoyer_anciennes_publications():
             f"✅ Nettoyage terminé : {supprimees} publication(s) supprimée(s) "
             f"en {lots} lots. Les publications postérieures à la date de coupure sont conservées."
         )
+        return True
     except Exception as erreur:
         print(
             f"⚠️ Nettoyage interrompu après {supprimees} suppression(s) : {erreur}. "
             "Les publications déjà supprimées ne seront plus présentes dans le dépôt ; "
             "le prochain démarrage pourra continuer avec les publications restantes."
         )
+        return False
 
 
 def initialiser_memoire_demarrage():
@@ -506,7 +508,12 @@ def boucle_actualite():
 
 
 if __name__ == '__main__':
-    nettoyer_anciennes_publications()
+    # Ne pas lancer les autres boucles Bluesky tant que le nettoyage n'est pas terminé :
+    # cela évite que DM/mentions/publications aggravent les erreurs 429.
+    while not nettoyer_anciennes_publications():
+        print("⏳ Nettoyage non terminé : nouvelle tentative dans 60 secondes.")
+        time.sleep(60)
+
     initialiser_memoire_demarrage()
     threading.Thread(target=boucle_exploration, daemon=True).start()
     threading.Thread(target=repondre_aux_dms, daemon=True).start()
