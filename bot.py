@@ -61,7 +61,7 @@ Si une conversation ou une actualité aborde ces sujets de manière dangereuse, 
 def initialiser_memoire_demarrage():
     print("🧠 Lexo charge sa mémoire pour ne pas radoter après son redémarrage...")
     try:
-        timeline = bsky.app.bsky.feed.get_timeline({'limit': 10}).feed
+        timeline = bsky.app.bsky.feed.get_timeline({'limit': 5}).feed
         for item in timeline:
             memoire_actions.add(item.post.cid)
             
