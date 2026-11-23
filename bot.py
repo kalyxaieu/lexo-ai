@@ -134,8 +134,11 @@ def repondre_aux_dms():
                     texte_upper = texte.upper()
                     demande_blocage = any(term in texte.lower() for term in (
                         "bloque-moi", "bloque moi", "bloquez-moi", "bloquez moi",
-                        "block me", "please block me", "je veux être bloqué",
-                        "je souhaite être bloqué"
+                        "bloque mon compte", "bloquer mon compte",
+                        "peux-tu me bloquer", "peux tu me bloquer",
+                        "je veux être bloqué", "je souhaite être bloqué",
+                        "block me", "please block me", "block my account",
+                        "please block my account", "block this account"
                     ))
                     if demande_blocage:
                         try:
