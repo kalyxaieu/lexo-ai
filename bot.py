@@ -58,6 +58,53 @@ ANALYSE : Avant de répondre, analyse le ton.
 Si une conversation ou une actualité aborde ces sujets de manière dangereuse, refuse poliment d'y participer ou condamne fermement ces actes."""
 
 # --- FONCTION ANTI-RADOTAGE AU DÉMARRAGE ---
+def nettoyer_anciennes_publications():
+    """
+    Nettoyage unique au demarrage.
+    La cle est stockee sur le disque Render uniquement si un disque persistant
+    est configure ; sinon la suppression peut se relancer au prochain redemarrage.
+    """
+    marqueur = os.getenv("LEXO_CLEANUP_MARKER", "/tmp/lexo_old_posts_cleanup.done")
+    if os.path.exists(marqueur):
+        print("🧹 Nettoyage initial deja effectue.")
+        return
+
+    print("🧹 Nettoyage initial des anciennes publications Lexo...")
+    try:
+        cursor = None
+        supprimees = 0
+        vues = set()
+        while True:
+            params = {"actor": MY_DID, "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            page = bsky.app.bsky.feed.get_author_feed(params)
+
+            for item in page.feed:
+                post = item.post
+                if post.author.did != MY_DID or post.uri in vues:
+                    continue
+                vues.add(post.uri)
+                rkey = post.uri.rsplit("/", 1)[-1]
+                bsky.com.atproto.repo.delete_record({
+                    "repo": MY_DID,
+                    "collection": "app.bsky.feed.post",
+                    "rkey": rkey
+                })
+                supprimees += 1
+                print(f"🗑️ Ancienne publication Lexo supprimée ({supprimees}).")
+
+            cursor = getattr(page, "cursor", None)
+            if not cursor:
+                break
+
+        with open(marqueur, "w", encoding="utf-8") as fichier:
+            fichier.write("done")
+        print(f"✅ Nettoyage terminé : {supprimees} publication(s) supprimée(s).")
+    except Exception as e:
+        print(f"⚠️ Nettoyage initial incomplet ; il sera retenté au prochain démarrage : {e}")
+
+
 def initialiser_memoire_demarrage():
     print("🧠 Lexo charge sa mémoire pour ne pas radoter après son redémarrage...")
     try:
@@ -386,6 +433,7 @@ def boucle_actualite():
 
 
 if __name__ == '__main__':
+    nettoyer_anciennes_publications()
     initialiser_memoire_demarrage()
     threading.Thread(target=boucle_exploration, daemon=True).start()
     threading.Thread(target=repondre_aux_dms, daemon=True).start()
