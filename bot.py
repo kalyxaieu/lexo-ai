@@ -39,7 +39,7 @@ memoire_actions = set()
 FENETRE_LECTURE_SECONDES = 21600
 MAX_POSTS_LUS_PAR_FENETRE = 5
 MAX_LIKES_PAR_FENETRE = 5
-dernier_scan = 0.0
+dernier_scan = time.time()
 likes_dans_fenetre = 0
 date_dernier_post = None
 verrou_limites = threading.Lock()
@@ -327,6 +327,27 @@ def lancer_lexo_mentions():
         time.sleep(30)
 
 
+def a_deja_publie_aujourdhui():
+    """Evite un second post quotidien apres un redemarrage du processus."""
+    aujourd_hui = datetime.now(timezone.utc).date()
+    try:
+        feed = bsky.app.bsky.feed.get_author_feed({'actor': MY_DID, 'limit': 20}).feed
+        for item in feed:
+            if item.post.author.did != MY_DID:
+                continue
+            date_creation = getattr(item.post.record, 'created_at', None)
+            if not date_creation:
+                continue
+            date_creation = datetime.fromisoformat(date_creation.replace("Z", "+00:00"))
+            if date_creation.astimezone(timezone.utc).date() == aujourd_hui:
+                return True
+    except Exception as e:
+        print(f"Verification du post quotidien impossible : {e}")
+        # En cas de doute, ne pas publier : comportement prudent.
+        return True
+    return False
+
+
 def boucle_actualite():
     """Publie au maximum un post original par jour."""
     global date_dernier_post
@@ -334,7 +355,7 @@ def boucle_actualite():
     while True:
         try:
             aujourd_hui = datetime.now(timezone.utc).date()
-            if date_dernier_post == aujourd_hui:
+            if date_dernier_post == aujourd_hui or a_deja_publie_aujourdhui():
                 time.sleep(300)
                 continue
             vraie_info = lire_actualite_medias()
