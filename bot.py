@@ -60,25 +60,47 @@ Si une conversation ou une actualité aborde ces sujets de manière dangereuse, 
 # --- FONCTION ANTI-RADOTAGE AU DÉMARRAGE ---
 def nettoyer_anciennes_publications():
     """
-    Nettoyage unique au demarrage.
-    La cle est stockee sur le disque Render uniquement si un disque persistant
-    est configure ; sinon la suppression peut se relancer au prochain redemarrage.
+    Nettoyage unique avec reprise automatique après limitation 429.
+    Le nettoyage ne démarre les autres boucles qu'une fois terminé.
     """
     marqueur = os.getenv("LEXO_CLEANUP_MARKER", "/tmp/lexo_old_posts_cleanup.done")
     if os.path.exists(marqueur):
-        print("🧹 Nettoyage initial deja effectue.")
+        print("🧹 Nettoyage initial déjà effectué.")
         return
 
-    print("🧹 Nettoyage initial des anciennes publications Lexo...")
+    print("🧹 Nettoyage des anciennes publications Lexo démarré...")
+    supprimees = 0
+    vues = set()
+
+    def appeler_avec_reessais(operation, description):
+        attente = 30
+        for tentative in range(1, 7):
+            try:
+                return operation()
+            except Exception as erreur:
+                message = str(erreur)
+                if "429" not in message and "Too Many Requests" not in message:
+                    raise
+                if tentative == 6:
+                    raise
+                print(
+                    f"⏳ Limite Bluesky pendant {description}. "
+                    f"Pause de {attente}s (essai {tentative}/6)..."
+                )
+                time.sleep(attente)
+                attente = min(attente * 2, 300)
+
     try:
         cursor = None
-        supprimees = 0
-        vues = set()
         while True:
             params = {"actor": MY_DID, "limit": 100}
             if cursor:
                 params["cursor"] = cursor
-            page = bsky.app.bsky.feed.get_author_feed(params)
+
+            page = appeler_avec_reessais(
+                lambda: bsky.app.bsky.feed.get_author_feed(params),
+                "lecture de la page"
+            )
 
             for item in page.feed:
                 post = item.post
@@ -86,23 +108,33 @@ def nettoyer_anciennes_publications():
                     continue
                 vues.add(post.uri)
                 rkey = post.uri.rsplit("/", 1)[-1]
-                bsky.com.atproto.repo.delete_record({
-                    "repo": MY_DID,
-                    "collection": "app.bsky.feed.post",
-                    "rkey": rkey
-                })
+
+                appeler_avec_reessais(
+                    lambda rkey=rkey: bsky.com.atproto.repo.delete_record({
+                        "repo": MY_DID,
+                        "collection": "app.bsky.feed.post",
+                        "rkey": rkey
+                    }),
+                    f"suppression de la publication {supprimees + 1}"
+                )
                 supprimees += 1
                 print(f"🗑️ Ancienne publication Lexo supprimée ({supprimees}).")
+                # Petite pause pour lisser les requêtes sans ralentir inutilement.
+                time.sleep(0.15)
 
-            cursor = getattr(page, "cursor", None)
-            if not cursor:
+            nouveau_cursor = getattr(page, "cursor", None)
+            if not nouveau_cursor or nouveau_cursor == cursor:
                 break
+            cursor = nouveau_cursor
 
         with open(marqueur, "w", encoding="utf-8") as fichier:
             fichier.write("done")
         print(f"✅ Nettoyage terminé : {supprimees} publication(s) supprimée(s).")
     except Exception as e:
-        print(f"⚠️ Nettoyage initial incomplet ; il sera retenté au prochain démarrage : {e}")
+        print(
+            f"⚠️ Nettoyage interrompu après {supprimees} suppression(s) : {e}. "
+            "Il reprendra au prochain démarrage."
+        )
 
 
 def initialiser_memoire_demarrage():
